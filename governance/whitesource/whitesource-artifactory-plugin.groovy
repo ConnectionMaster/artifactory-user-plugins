@@ -189,7 +189,7 @@ jobs {
      */
     updateRepoWithWhiteSource(cron: "0 28 13 * * ?") {
         log.info("Starting job updateRepoWithWhiteSource By WhiteSource")
-        File tempFolder = new File(TEMP_ARTIFACTORY_DIRECTORY)
+        File tempFolder = new File(TEMP_ARTIFACTORY_DIRECTORY, System.nanoTime().toString())
         try {
             // Get config properties from 'plugins/whitesource-artifactory-plugin.properties'
             def config = new ConfigSlurper().parse(

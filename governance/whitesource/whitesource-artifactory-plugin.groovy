@@ -58,7 +58,7 @@ import java.security.MessageDigest
 import static groovy.io.FileType.FILES
 
 @Field final String TEMP_DIRECTORY = System.getProperty('java.io.tmpdir')
-@Field final String TEMP_ARTIFACTORY_DIRECTORY = Paths.get(TEMP_DIRECTORY, "WhitesourceArtifactoryPlugin").toString()
+@Field final String TEMP_ARTIFACTORY_DIRECTORY = Paths.get(TEMP_DIRECTORY, "whitesource-artifactory-plugin").toString()
 @Field final String CVE_URL = 'https://cve.mitre.org/cgi-bin/cvename.cgi?name='
 @Field final String INCLUDES_REPOSITORY_CONTENT = 'includesRepositoryContent'
 
@@ -116,8 +116,7 @@ import static groovy.io.FileType.FILES
 download {
     beforeDownloadRequest { request, repoPath ->
         def config = new ConfigSlurper().parse(
-                new File(ctx.artifactoryHome.pluginsDir.getCanonicalPath
-                        (), PROPERTIES_FILE_PATH).toURI().toURL())
+                new File(ctx.artifactoryHome.pluginsDir.getCanonicalPath(), PROPERTIES_FILE_PATH).toURI().toURL())
         boolean triggerBeforeDownload = isTriggerBeforeDownloadEnabled(config)
 
         if (triggerBeforeDownload) {

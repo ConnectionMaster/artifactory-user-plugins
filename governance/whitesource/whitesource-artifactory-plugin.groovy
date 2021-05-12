@@ -58,7 +58,7 @@ import java.security.MessageDigest
 import static groovy.io.FileType.FILES
 
 @Field final String TEMP_DIRECTORY = System.getProperty('java.io.tmpdir')
-@Field final String TEMP_ARTIFACTORY_DIRECTORY = Paths.get(TEMP_DIRECTORY, "WhitesourceArtifactoryPlugin").toString()
+@Field final String TEMP_ARTIFACTORY_DIRECTORY = Paths.get(TEMP_DIRECTORY, "whitesource-artifactory-plugin").toString()
 @Field final String CVE_URL = 'https://cve.mitre.org/cgi-bin/cvename.cgi?name='
 @Field final String INCLUDES_REPOSITORY_CONTENT = 'includesRepositoryContent'
 
@@ -109,6 +109,8 @@ import static groovy.io.FileType.FILES
 @Field final String[] ARCHIVE_INCLUDES_DEFAULT = ["jar", "war", "ear", "egg", "zip", "whl", "sca", "sda", "gem",
                                                   "tar.gz", "tar", "tgz", "tar.bz2", "rpm", "rar"]
 
+@Field final Object lockObject = new Object()
+
 /**
  * In case triggerBeforeDownload is enabled run the following 'beforeDownloadRequest' method.
  * This method will check policies for downloaded artifact
@@ -116,8 +118,7 @@ import static groovy.io.FileType.FILES
 download {
     beforeDownloadRequest { request, repoPath ->
         def config = new ConfigSlurper().parse(
-                new File(ctx.artifactoryHome.pluginsDir.getCanonicalPath
-                        (), PROPERTIES_FILE_PATH).toURI().toURL())
+                new File(ctx.artifactoryHome.pluginsDir.getCanonicalPath(), PROPERTIES_FILE_PATH).toURI().toURL())
         boolean triggerBeforeDownload = isTriggerBeforeDownloadEnabled(config)
 
         if (triggerBeforeDownload) {
@@ -188,117 +189,120 @@ jobs {
      * "0 42 9 * * ?"  - Build a trigger that will fire daily at 9:42 am
      */
     updateRepoWithWhiteSource(cron: "0 28 13 * * ?") {
-        log.info("Starting job updateRepoWithWhiteSource By WhiteSource")
-        File tempFolder = new File(TEMP_ARTIFACTORY_DIRECTORY, System.nanoTime().toString())
-        try {
-            // Get config properties from 'plugins/whitesource-artifactory-plugin.properties'
-            def config = new ConfigSlurper().parse(
-                    new File(ctx.artifactoryHome.pluginsDir.getCanonicalPath(), PROPERTIES_FILE_PATH).toURI().toURL())
-            CheckPolicyComplianceResult checkPoliciesResult = null
+        synchronized (lockObject) {
+            log.info("Starting job updateRepoWithWhiteSource By WhiteSource")
+            File tempFolder = new File(TEMP_ARTIFACTORY_DIRECTORY, System.nanoTime().toString())
+            try {
+                // Get config properties from 'plugins/whitesource-artifactory-plugin.properties'
+                def config = new ConfigSlurper().parse(
+                        new File(ctx.artifactoryHome.pluginsDir.getCanonicalPath(), PROPERTIES_FILE_PATH).toURI().toURL())
+                CheckPolicyComplianceResult checkPoliciesResult = null
 
-            // Get artifactory repositories names to scan from config file
-            String[] repositories = config.repoKeys as String[]
+                // Get artifactory repositories names to scan from config file
+                String[] repositories = config.repoKeys as String[]
 
-            // Get archive files extraction depth, Archive extraction depth should be between 1 and 7
-            // Default archive extraction depth is 2
-            def archiveExtractionDepth = config.containsKey(ARCHIVE_EXTRACTION_DEPTH) ?
-                    config.get(ARCHIVE_EXTRACTION_DEPTH) : ARCHIVE_EXTRACTION_DEPTH_DEFAULT
-            archiveExtractionDepth = verifyArchiveExtractionDepth(archiveExtractionDepth)
+                // Get archive files extraction depth, Archive extraction depth should be between 1 and 7
+                // Default archive extraction depth is 2
+                def archiveExtractionDepth = config.containsKey(ARCHIVE_EXTRACTION_DEPTH) ?
+                        config.get(ARCHIVE_EXTRACTION_DEPTH) : ARCHIVE_EXTRACTION_DEPTH_DEFAULT
+                archiveExtractionDepth = verifyArchiveExtractionDepth(archiveExtractionDepth)
 
-            // Get archive includes extensions from config file
-            // or use the default archive extensions 'ARCHIVE_INCLUDES_DEFAULT'
-            Set<String> archiveIncludes = getArchiveIncludes(config.archiveIncludes as String[], false)
-            Set<String> archiveIncludesWithPrefix = getArchiveIncludes(config.archiveIncludes as String[], true)
+                // Get archive includes extensions from config file
+                // or use the default archive extensions 'ARCHIVE_INCLUDES_DEFAULT'
+                Set<String> archiveIncludes = getArchiveIncludes(config.archiveIncludes as String[], false)
+                Set<String> archiveIncludesWithPrefix = getArchiveIncludes(config.archiveIncludes as String[], true)
 
-            // Get includes extensions you want to scan from config file
-            String[] includesRepositoryContent = config.getProperty(INCLUDES_REPOSITORY_CONTENT) as String[]
-            if (includesRepositoryContent.size() == 0) {
-                includesRepositoryContent = buildDefaults()
-            }
-            includesRepositoryContent = addPrefix(includesRepositoryContent)
+                // Get includes extensions you want to scan from config file
+                String[] includesRepositoryContent = config.getProperty(INCLUDES_REPOSITORY_CONTENT) as String[]
+                if (includesRepositoryContent.size() == 0) {
+                    includesRepositoryContent = buildDefaults()
+                }
+                includesRepositoryContent = addPrefix(includesRepositoryContent)
 
-            // Loop over repositories names provided in config
-            for (String repository : repositories) {
-                File repoTempFolder = new File(tempFolder, repository)
-                List<RepoPath> archiveFilesList = new ArrayList<>()
-                Map<String, WssItemInfo> sha1ToItemMap = new HashMap<String, WssItemInfo>()
-                String productName = config.containsKey(PRODUCT_NAME) ? config.productName : repository
+                // Loop over repositories names provided in config
+                for (String repository : repositories) {
+                    File repoTempFolder = new File(tempFolder, repository)
+                    List<RepoPath> archiveFilesList = new ArrayList<>()
+                    Map<String, WssItemInfo> sha1ToItemMap = new HashMap<String, WssItemInfo>()
+                    String productName = config.containsKey(PRODUCT_NAME) ? config.productName : repository
 
-                // Get all repository files/content, fill them in sha1ToItemMap.
-                // If file is archive then it will be added to archiveFilesList to extract it later
-                findAllRepositoryItems(RepoPathFactory.create(repository), sha1ToItemMap, archiveFilesList, archiveIncludes)
+                    // Get all repository files/content, fill them in sha1ToItemMap.
+                    // If file is archive then it will be added to archiveFilesList to extract it later
+                    findAllRepositoryItems(RepoPathFactory.create(repository), sha1ToItemMap, archiveFilesList, archiveIncludes)
 
-                def archiveFilesDirectories = cloneArchiveFilesToTempDirectory(repoTempFolder, archiveFilesList)
-                archiveFilesList.clear() // clear list - it's not used after this step
+                    def archiveFilesDirectories = cloneArchiveFilesToTempDirectory(repoTempFolder, archiveFilesList)
+                    archiveFilesList.clear() // clear list - it's not used after this step
 
-                int repoSize = sha1ToItemMap.size()
-                int maxRepoScanSize = config.containsKey(MAX_REPO_SCAN_SIZE) ? config.maxRepoScanSize > 0 ?
-                        config.maxRepoScanSize : MAX_REPO_SIZE : MAX_REPO_SIZE
-                int maxRepoUploadWssSize = config.containsKey(MAX_REPO_UPLOAD_WSS_SIZE) ?
-                        config.maxRepoUploadWssSize > 0 ? config.maxRepoUploadWssSize : MAX_REPO_SIZE_TO_UPLOAD
-                        : MAX_REPO_SIZE_TO_UPLOAD
-                if (repoSize > maxRepoScanSize) {
-                    log.warn("The max repository size for check policies in WhiteSource is : ${maxRepoScanSize} items, Job Exiting")
-                } else if (repoSize == 0) {
-                    log.warn("This repository is empty or not exit : ${repository} , Job Exiting")
-                } else {
-                    // create project and WhiteSource service
-                    Collection<AgentProjectInfo> projects = createProjects(sha1ToItemMap, repository, archiveFilesDirectories, includesRepositoryContent,
-                            archiveIncludesWithPrefix, archiveExtractionDepth)
-                    WhitesourceService service = createWhiteSourceService(config)
-
-                    // update WhiteSource with repositories
-                    String userKey = getUserKeyFromPropertiesFile(config, USER_KEY)
-
-                    if (config.checkPolicies) {
-                        checkPoliciesResult = checkPolicies(service, config.apiKey, productName, BLANK, projects,
-                                config.forceCheckAllDependencies, config.forceUpdate, userKey)
-                        if (checkPoliciesResult == null) {
-                            break
-                        }
-                    }
-
-                    if (repoSize > maxRepoUploadWssSize) {
-                        log.warn("Max repository size inorder to update WhiteSource is : ${maxRepoUploadWssSize}")
+                    int repoSize = sha1ToItemMap.size()
+                    int maxRepoScanSize = config.containsKey(MAX_REPO_SCAN_SIZE) ? config.maxRepoScanSize > 0 ?
+                            config.maxRepoScanSize : MAX_REPO_SIZE : MAX_REPO_SIZE
+                    int maxRepoUploadWssSize = config.containsKey(MAX_REPO_UPLOAD_WSS_SIZE) ?
+                            config.maxRepoUploadWssSize > 0 ? config.maxRepoUploadWssSize : MAX_REPO_SIZE_TO_UPLOAD
+                            : MAX_REPO_SIZE_TO_UPLOAD
+                    if (repoSize > maxRepoScanSize) {
+                        log.warn("The max repository size for check policies in WhiteSource is : ${maxRepoScanSize} items, Job Exiting")
+                    } else if (repoSize == 0) {
+                        log.warn("This repository is empty or not exit : ${repository} , Job Exiting")
                     } else {
-                        //updating the WSS service with scanning results
-                        UpdateInventoryResult updateResult = null
-                        try {
-                            UpdateInventoryRequest updateInventoryRequest = new UpdateInventoryRequest(config.apiKey, projects)
-                            updateInventoryRequest.setUserKey(userKey)
-                            updateInventoryRequest.setProduct(productName)
-                            if (config.updateWss) {
-                                if (config.forceUpdate || !config.checkPolicies) {
-                                    log.info("Sending Update to WhiteSource for repository : ${repository}")
-                                    updateResult = service.update(updateInventoryRequest)
-                                    logResult(updateResult)
-                                } else if (checkPoliciesResult != null) {
-                                    log.info("Sending Update to WhiteSource for repository : ${repository}")
-                                    if (!checkPoliciesResult.hasRejections()) {
+                        // create project and WhiteSource service
+                        Collection<AgentProjectInfo> projects = createProjects(sha1ToItemMap, repository, archiveFilesDirectories, includesRepositoryContent,
+                                archiveIncludesWithPrefix, archiveExtractionDepth)
+                        WhitesourceService service = createWhiteSourceService(config)
+
+                        // update WhiteSource with repositories
+                        String userKey = getUserKeyFromPropertiesFile(config, USER_KEY)
+
+                        if (config.checkPolicies) {
+                            checkPoliciesResult = checkPolicies(service, config.apiKey, productName, BLANK, projects,
+                                    config.forceCheckAllDependencies, config.forceUpdate, userKey)
+                            if (checkPoliciesResult == null) {
+                                break
+                            }
+                        }
+
+                        if (repoSize > maxRepoUploadWssSize) {
+                            log.warn("Max repository size inorder to update WhiteSource is : ${maxRepoUploadWssSize}")
+                        } else {
+                            //updating the WSS service with scanning results
+                            UpdateInventoryResult updateResult = null
+                            try {
+                                UpdateInventoryRequest updateInventoryRequest = new UpdateInventoryRequest(config.apiKey, projects)
+                                updateInventoryRequest.setUserKey(userKey)
+                                updateInventoryRequest.setProduct(productName)
+                                if (config.updateWss) {
+                                    if (config.forceUpdate || !config.checkPolicies) {
+                                        log.info("Sending Update to WhiteSource for repository : ${repository}")
                                         updateResult = service.update(updateInventoryRequest)
                                         logResult(updateResult)
+                                    } else if (checkPoliciesResult != null) {
+                                        log.info("Sending Update to WhiteSource for repository : ${repository}")
+                                        if (!checkPoliciesResult.hasRejections()) {
+                                            updateResult = service.update(updateInventoryRequest)
+                                            logResult(updateResult)
+                                        }
                                     }
                                 }
+                            } catch (Exception e) {
+                                log.error(e.getMessage())
+                                break
                             }
+                        }
+                        try {
+                            populateArtifactoryPropertiesTab(projects, config, repository, service, sha1ToItemMap, checkPoliciesResult, productName, userKey)
                         } catch (Exception e) {
                             log.error(e.getMessage())
                             break
                         }
                     }
-                    try {
-                        populateArtifactoryPropertiesTab(projects, config, repository, service, sha1ToItemMap, checkPoliciesResult, productName, userKey)
-                    } catch (Exception e) {
-                        log.error(e.getMessage())
-                        break
-                    }
+                    deleteNonEmptyDirectory(repoTempFolder)
                 }
-                deleteNonEmptyDirectory(repoTempFolder)
+            } catch (Exception e) {
+                log.warn("Error while running whitesource-plugin: ", e)
+            } finally {
+                deleteWhitesourceUARelatedFiles()
+                deleteNonEmptyDirectory(tempFolder)
+                log.info("Job updateRepoWithWhiteSource has Finished")
             }
-        } catch (Exception e) {
-            log.warn("Error while running whitesource-plugin: ", e)
-        } finally {
-            deleteNonEmptyDirectory(tempFolder)
-            log.info("Job updateRepoWithWhiteSource has Finished")
         }
     }
 }
@@ -379,6 +383,22 @@ private void deleteNonEmptyDirectory(File dir) {
     boolean deleteSucceeded = dir.delete();
     if (!deleteSucceeded) {
         log.warn("Failed to delete temp folder/file '" + dir.getCanonicalPath() + "'")
+    }
+}
+
+/**
+ * Delete WhiteSource unified agent created files from temp directory
+ */
+private void deleteWhitesourceUARelatedFiles() {
+    File tempFile = new File(TEMP_DIRECTORY);
+    File[] foundFiles = tempFile.listFiles(new FilenameFilter() {
+        public boolean accept(File fileDir, String name) {
+            return name.startsWith("ws-ua");
+        }
+    })
+
+    for (File file : foundFiles) {
+        deleteNonEmptyDirectory(file)
     }
 }
 
